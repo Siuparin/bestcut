@@ -241,7 +241,7 @@ def crea_excel_download(spezzoni, richieste, risultato, soglia):
     ws[f'A{row}'].alignment = Alignment(horizontal='center')
     
     row += 1
-    headers = [('A', 'Misura (m)'), ('B', 'Richiesti'), ('C', 'Fatti'), ('D', 'Mancanti'), ('E', 'Stato')]
+    headers = [('A', 'Misura (m)'), ('B', 'Misura (cm)'), ('C', 'Quantita'), ('D', 'Totale (m)'), ('E', 'Tubo mancante (m)')]
     for col, title in headers:
         ws[f'{col}{row}'] = title
         ws[f'{col}{row}'].font = subheader_font
@@ -249,17 +249,33 @@ def crea_excel_download(spezzoni, richieste, risultato, soglia):
     
     for richiesta in richieste:
         row += 1
+        ws[f'A{row}'] = richiesta.lunghezza
+        ws[f'B{row}'] = richiesta.lunghezza * 100
+        ws[f'C{row}'] = richiesta.quantita
+        ws[f'D{row}'] = richiesta.lunghezza * richiesta.quantita
+        
+        # NUOVO: Calcola tubo mancante
         fatti = risultato.tagli_fatti.get(richiesta.lunghezza, 0)
         mancanti = risultato.tagli_mancanti.get(richiesta.lunghezza, 0)
-        
-        ws[f'A{row}'] = richiesta.lunghezza
-        ws[f'B{row}'] = richiesta.quantita
-        ws[f'C{row}'] = fatti
-        ws[f'D{row}'] = mancanti
-        ws[f'E{row}'] = "✅ OK" if mancanti == 0 else f"⚠️ Mancano {mancanti}"
+        tubo_mancante = mancanti * richiesta.lunghezza if mancanti > 0 else 0
+        ws[f'E{row}'] = tubo_mancante if tubo_mancante > 0 else "-"
         
         for col in ['A', 'B', 'C', 'D', 'E']:
             ws[f'{col}{row}'].border = border
+
+    # AGGIUNTO: Riga vuota per separazione
+    row += 1
+    
+    # Riga totale tubo mancante
+    row += 1
+    ws[f'A{row}'] = "TOTALE TUBO MANCANTE:"
+    ws[f'A{row}'].font = Font(bold=True)
+    ws.merge_cells(f'B{row}:E{row}')
+    totale_mancante = sum(misura * qty for misura, qty in risultato.tagli_mancanti.items())
+    ws[f'B{row}'] = f"{totale_mancante:.2f} m" if totale_mancante > 0 else "0 m"
+    ws[f'B{row}'].font = Font(bold=True, color="f44336" if totale_mancante > 0 else "4CAF50")
+    for col in ['A', 'B']:
+        ws[f'{col}{row}'].border = border
     
     # Piano di taglio dettagliato
     row += 2
