@@ -1,27 +1,26 @@
 # bestcut_webapp.py
-# Versione per Streamlit Cloud - usa requirements.txt
+# Versione con taglio parziale - dice cosa si può fare e cosa manca
 
 import streamlit as st
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 import copy
 from itertools import combinations
 from datetime import datetime
 import pandas as pd
 from io import BytesIO
 
-# Importazione openpyxl con gestione errore
+# Importazione openpyxl
 try:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     EXCEL_DISPONIBILE = True
 except ImportError:
     EXCEL_DISPONIBILE = False
-    st.warning("⚠️ openpyxl non disponibile. L'export Excel non funzionerà.")
 
-# Configurazione pagina Streamlit
+# Configurazione pagina
 st.set_page_config(
-    page_title="BestCut - Minimi Spezzoni",
+    page_title="BestCut - Taglio Parziale",
     page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -43,12 +42,12 @@ st.markdown("""
         text-align: center;
         margin-bottom: 2rem;
     }
-    .logic-box {
-        background-color: #FFF3E0;
-        color: #E65100;
+    .partial-box {
+        background-color: #E3F2FD;
+        color: #1565C0;
         padding: 1rem;
         border-radius: 10px;
-        border-left: 5px solid #FF9800;
+        border-left: 5px solid #2196F3;
         margin: 1rem 0;
     }
     .success-box {
@@ -58,19 +57,20 @@ st.markdown("""
         border-radius: 10px;
         border-left: 5px solid #28a745;
     }
-    .warning-box {
-        background-color: #fff3cd;
-        color: #856404;
-        padding: 1rem;
-        border-radius: 10px;
-        border-left: 5px solid #ffc107;
-    }
     .error-box {
         background-color: #f8d7da;
         color: #721c24;
         padding: 1rem;
         border-radius: 10px;
         border-left: 5px solid #dc3545;
+    }
+    .missing-box {
+        background-color: #ffebee;
+        color: #c62828;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #f44336;
+        margin: 0.5rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -92,60 +92,93 @@ class PianoTaglio:
     tagli: List[float]
     scarto: float
 
+@dataclass
+class RisultatoCalcolo:
+    piani: List[PianoTaglio]
+    scarto_totale: float
+    completato: bool  # True = tutto fatto, False = parziale
+    tagli_fatti: Dict[float, int]  # misura -> quantità fatta
+    tagli_mancanti: Dict[float, int]  # misura -> quantità mancante
+    spezzoni_usati: int
+    spezzoni_totali: int
+
 class OttimizzatoreTagli:
     def __init__(self, soglia_scarto: float = 0.3):
         self.soglia_scarto = soglia_scarto
         
-    def calcola_ottimale(self, spezzoni: List[Spezzone], richieste: List[TaglioRichiesto]) -> Tuple[List[PianoTaglio], float, bool]:
+    def calcola_ottimale(self, spezzoni: List[Spezzone], richieste: List[TaglioRichiesto]) -> RisultatoCalcolo:
+        """
+        Calcola il piano di taglio.
+        Se non basta il materiale, fa quello che può e indica cosa manca.
+        """
+        # Crea lista di tutti i tagli necessari con la loro misura
         tagli_necessari = []
         for richiesta in richieste:
             for _ in range(richiesta.quantita):
                 tagli_necessari.append(richiesta.lunghezza)
         
+        # Ordina per lunghezza decrescente (i più grandi prima)
         tagli_necessari.sort(reverse=True)
-        totale_spezzoni = sum(s.lunghezza for s in spezzoni)
-        totale_tagli = sum(tagli_necessari)
         
-        if totale_tagli > totale_spezzoni:
-            return [], totale_spezzoni - totale_tagli, False
+        # Copia per tenere traccia di cosa riusciamo a fare
+        tagli_originali = tagli_necessari.copy()
         
+        # Ordina spezzoni dal più grande al più piccolo
         spezzoni_ordinati = sorted(spezzoni, key=lambda x: x.lunghezza, reverse=True)
         spezzoni_work = copy.deepcopy(spezzoni_ordinati)
         tagli_rimanenti = tagli_necessari.copy()
         piani = []
         
-        while tagli_rimanenti:
-            if not spezzoni_work:
-                return None, 0, False
-            
+        while tagli_rimanenti and spezzoni_work:
             spezzone_corrente = spezzoni_work[0]
             tagli_da_tagliare = []
             tagli_temp = tagli_rimanenti.copy()
             
+            # Prova a infilare tagli dal più grande al più piccolo
             for taglio in tagli_temp:
                 if sum(tagli_da_tagliare) + taglio <= spezzone_corrente.lunghezza:
                     tagli_da_tagliare.append(taglio)
                     tagli_rimanenti.remove(taglio)
             
-            if not tagli_da_tagliare:
-                spezzoni_work.pop(0)
-                continue
-            
-            scarto = spezzone_corrente.lunghezza - sum(tagli_da_tagliare)
-            
-            piani.append(PianoTaglio(
-                spezzone_id=spezzone_corrente.id,
-                spezzone_lunghezza=spezzone_corrente.lunghezza,
-                tagli=tagli_da_tagliare,
-                scarto=scarto
-            ))
+            if tagli_da_tagliare:
+                scarto = spezzone_corrente.lunghezza - sum(tagli_da_tagliare)
+                piani.append(PianoTaglio(
+                    spezzone_id=spezzone_corrente.id,
+                    spezzone_lunghezza=spezzone_corrente.lunghezza,
+                    tagli=tagli_da_tagliare,
+                    scarto=scarto
+                ))
             
             spezzoni_work.pop(0)
         
+        # Calcola cosa è stato fatto e cosa manca
+        tagli_fatti = {}
+        tagli_mancanti = {}
+        
+        for piano in piani:
+            for taglio in piano.tagli:
+                tagli_fatti[taglio] = tagli_fatti.get(taglio, 0) + 1
+        
+        # Per ogni richiesta originale, calcola quanti ne mancano
+        for richiesta in richieste:
+            fatti = tagli_fatti.get(richiesta.lunghezza, 0)
+            if fatti < richiesta.quantita:
+                tagli_mancanti[richiesta.lunghezza] = richiesta.quantita - fatti
+        
         scarto_totale = sum(p.scarto for p in piani)
-        return piani, scarto_totale, True
+        completato = len(tagli_rimanenti) == 0
+        
+        return RisultatoCalcolo(
+            piani=piani,
+            scarto_totale=scarto_totale,
+            completato=completato,
+            tagli_fatti=tagli_fatti,
+            tagli_mancanti=tagli_mancanti,
+            spezzoni_usati=len(piani),
+            spezzoni_totali=len(spezzoni)
+        )
 
-def crea_excel_download(spezzoni, richieste, piani, soglia):
+def crea_excel_download(spezzoni, richieste, risultato, soglia):
     """Crea file Excel in memoria per il download"""
     wb = Workbook()
     ws = wb.active
@@ -158,7 +191,7 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
                   top=Side(style='thin'), bottom=Side(style='thin'))
     
     ws.merge_cells('A1:E1')
-    ws['A1'] = "PIANO DI TAGLIO TUBI - MINIMI SPEZZONI"
+    ws['A1'] = "PIANO DI TAGLIO TUBI"
     ws['A1'].font = Font(size=18, bold=True, color="2196F3")
     ws['A1'].alignment = Alignment(horizontal='center')
     ws.row_dimensions[1].height = 30
@@ -166,10 +199,19 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
     ws['A2'] = f"Generato: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     ws['A2'].font = Font(italic=True)
     
-    ws['A3'] = "Strategia: Minimizzare il numero di spezzoni utilizzati"
-    ws['A3'].font = Font(italic=True, color="E65100")
+    # Stato completamento
+    row = 4
+    if risultato.completato:
+        ws.merge_cells(f'A{row}:E{row}')
+        ws[f'A{row}'] = "✅ TAGLIO COMPLETATO - Tutti i pezzi realizzabili"
+        ws[f'A{row}'].font = Font(size=12, bold=True, color="4CAF50")
+    else:
+        ws.merge_cells(f'A{row}:E{row}')
+        ws[f'A{row}'] = "⚠️ TAGLIO PARZIALE - Materiali insufficienti"
+        ws[f'A{row}'].font = Font(size=12, bold=True, color="FF9800")
     
-    row = 5
+    # Spezzoni disponibili
+    row = 6
     ws.merge_cells(f'A{row}:E{row}')
     ws[f'A{row}'] = "SPEZZONI DISPONIBILI"
     ws[f'A{row}'].font = header_font
@@ -190,15 +232,16 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
         for col in ['A', 'B', 'C']:
             ws[f'{col}{row}'].border = border
     
+    # Tagli richiesti vs fatti
     row += 2
     ws.merge_cells(f'A{row}:E{row}')
-    ws[f'A{row}'] = "TAGLI RICHIESTI"
+    ws[f'A{row}'] = "RIEPILOGO TAGLI"
     ws[f'A{row}'].font = header_font
     ws[f'A{row}'].fill = header_fill
     ws[f'A{row}'].alignment = Alignment(horizontal='center')
     
     row += 1
-    headers = [('A', 'Misura (m)'), ('B', 'Misura (cm)'), ('C', 'Quantita'), ('D', 'Totale (m)'), ('E', 'Tubo mancante (m)')]
+    headers = [('A', 'Misura (m)'), ('B', 'Richiesti'), ('C', 'Fatti'), ('D', 'Mancanti'), ('E', 'Stato')]
     for col, title in headers:
         ws[f'{col}{row}'] = title
         ws[f'{col}{row}'].font = subheader_font
@@ -206,33 +249,19 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
     
     for richiesta in richieste:
         row += 1
-        ws[f'A{row}'] = richiesta.lunghezza
-        ws[f'B{row}'] = richiesta.lunghezza * 100
-        ws[f'C{row}'] = richiesta.quantita
-        ws[f'D{row}'] = richiesta.lunghezza * richiesta.quantita
-        
-        # NUOVO: Calcola tubo mancante
         fatti = risultato.tagli_fatti.get(richiesta.lunghezza, 0)
         mancanti = risultato.tagli_mancanti.get(richiesta.lunghezza, 0)
-        tubo_mancante = mancanti * richiesta.lunghezza if mancanti > 0 else 0
-        ws[f'E{row}'] = tubo_mancante if tubo_mancante > 0 else "-"
+        
+        ws[f'A{row}'] = richiesta.lunghezza
+        ws[f'B{row}'] = richiesta.quantita
+        ws[f'C{row}'] = fatti
+        ws[f'D{row}'] = mancanti
+        ws[f'E{row}'] = "✅ OK" if mancanti == 0 else f"⚠️ Mancano {mancanti}"
         
         for col in ['A', 'B', 'C', 'D', 'E']:
             ws[f'{col}{row}'].border = border
-            
-    row += 1
-
-    # Riga totale tubo mancante
-    row += 1
-    ws[f'A{row}'] = "TOTALE TUBO MANCANTE:"
-    ws[f'A{row}'].font = Font(bold=True)
-    ws.merge_cells(f'B{row}:E{row}')
-    totale_mancante = sum(misura * qty for misura, qty in risultato.tagli_mancanti.items())
-    ws[f'B{row}'] = f"{totale_mancante:.2f} m" if totale_mancante > 0 else "0 m"
-    ws[f'B{row}'].font = Font(bold=True, color="f44336" if totale_mancante > 0 else "4CAF50")
-    for col in ['A', 'B']:
-        ws[f'{col}{row}'].border = border
     
+    # Piano di taglio dettagliato
     row += 2
     ws.merge_cells(f'A{row}:E{row}')
     ws[f'A{row}'] = "PIANO DI TAGLIO DETTAGLIATO"
@@ -240,7 +269,7 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
     ws[f'A{row}'].fill = header_fill
     ws[f'A{row}'].alignment = Alignment(horizontal='center')
     
-    for piano in piani:
+    for piano in risultato.piani:
         row += 1
         ws.merge_cells(f'A{row}:E{row}')
         ws[f'A{row}'] = f"Spezzone #{piano.spezzone_id} ({piano.spezzone_lunghezza:.3f}m)"
@@ -290,16 +319,14 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
 
 def main():
     # Header
-    st.markdown('<p class="main-header">🔧 BestCut v3.1</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Ottimizzatore che minimizza il NUMERO DI SPEZZONI utilizzati</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">🔧 BestCut v3.2</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Ottimizzatore con supporto TAGLIO PARZIALE</p>', unsafe_allow_html=True)
     
-    # Spiegazione logica
+    # Info
     st.markdown("""
-    <div class="logic-box">
-        <strong>🧠 LOGICA "MINIMI SPEZZONI":</strong><br>
-        Il programma riempie completamente ogni tubo prima di passare al prossimo, 
-        anche se questo comporta uno scarto leggermente maggiore sul singolo tubo, 
-        ma <strong>risparmia interi spezzoni</strong> per altri lavori!
+    <div class="partial-box">
+        <strong>🆕 NOVITÀ:</strong> Se i tubi non bastano, il programma ti dice cosa riesci a fare 
+        con quello che hai e quanto ne manca!
     </div>
     """, unsafe_allow_html=True)
     
@@ -307,7 +334,7 @@ def main():
     if 'spezzoni' not in st.session_state:
         st.session_state.spezzoni = []
         st.session_state.prossimo_id = 1
-        st.session_state.piani = None
+        st.session_state.risultato = None
         st.session_state.richieste = None
         st.session_state.soglia = 0.3
     
@@ -317,9 +344,8 @@ def main():
     with col1:
         st.subheader("📦 Spezzoni Disponibili")
         
-        st.info("💡 Inserisci prima i tubi PIU GRANDI (verranno ordinati automaticamente)")
+        st.info("💡 Inserisci prima i tubi PIÙ GRANDI")
         
-        # Input nuovo spezzone
         nuovo_spezzone = st.number_input(
             "Lunghezza spezzone (metri)",
             min_value=0.0,
@@ -338,12 +364,11 @@ def main():
                 for i, s in enumerate(st.session_state.spezzoni, 1):
                     s.id = i
                 st.session_state.prossimo_id = len(st.session_state.spezzoni) + 1
-                st.success(f"✅ Aggiunto e ordinato: {nuovo_spezzone:.2f}m")
+                st.success(f"✅ Aggiunto: {nuovo_spezzone:.2f}m")
                 st.rerun()
             else:
-                st.error("❌ Inserisci una lunghezza valida")
+                st.error("❌ Lunghezza non valida")
         
-        # Mostra spezzoni
         if st.session_state.spezzoni:
             data = [{"ID": s.id, "Lunghezza (m)": f"{s.lunghezza:.2f}", "Lunghezza (cm)": f"{s.lunghezza*100:.0f}"} 
                    for s in st.session_state.spezzoni]
@@ -351,7 +376,7 @@ def main():
             st.dataframe(df, use_container_width=True, hide_index=True)
             
             id_da_rimuovere = st.selectbox(
-                "Seleziona spezzone da rimuovere",
+                "Seleziona da rimuovere",
                 options=[s.id for s in st.session_state.spezzoni],
                 format_func=lambda x: f"ID {x} - {next(s.lunghezza for s in st.session_state.spezzoni if s.id == x):.2f}m"
             )
@@ -366,25 +391,24 @@ def main():
                     st.success("✅ Rimosso!")
                     st.rerun()
             with col_btn2:
-                if st.button("🗑️🗑️ Rimuovi Tutti", use_container_width=True):
+                if st.button("🗑️🗑️ Tutti", use_container_width=True):
                     st.session_state.spezzoni = []
                     st.session_state.prossimo_id = 1
                     st.success("✅ Tutti rimossi!")
                     st.rerun()
         else:
-            st.warning("⚠️ Nessuno spezzone inserito.")
+            st.warning("⚠️ Nessuno spezzone inserito")
     
     with col2:
         st.subheader("✂️ Tagli Richiesti")
         
         st.session_state.soglia = st.number_input(
-            "Soglia scarto accettabile (metri)",
+            "Soglia scarto (metri)",
             min_value=0.0,
             value=0.3,
             step=0.05,
             format="%.2f"
         )
-        st.caption(f"= {st.session_state.soglia*100:.0f} centimetri")
         
         st.markdown("---")
         richieste = []
@@ -395,40 +419,32 @@ def main():
                 st.markdown(f"**#{i+1}**")
             with cols[1]:
                 misura = st.number_input(
-                    f"Misura {i+1} (m)",
-                    min_value=0.0,
+                    f"M{i+1}", min_value=0.0,
                     value=3.2 if i == 0 else (0.5 if i == 1 else 0.0),
-                    step=0.1,
-                    format="%.2f",
-                    key=f"misura_{i}",
-                    label_visibility="collapsed"
+                    step=0.1, format="%.2f",
+                    key=f"misura_{i}", label_visibility="collapsed"
                 )
             with cols[2]:
                 qty = st.number_input(
-                    f"Qty {i+1}",
-                    min_value=0,
+                    f"Q{i+1}", min_value=0,
                     value=1 if i == 0 else (5 if i == 1 else 0),
-                    step=1,
-                    key=f"qty_{i}",
-                    label_visibility="collapsed"
+                    step=1, key=f"qty_{i}", label_visibility="collapsed"
                 )
             
             if misura > 0 and qty > 0:
                 richieste.append(TaglioRichiesto(misura, qty))
         
         richieste.sort(key=lambda x: x.lunghezza, reverse=True)
+        st.session_state.richieste = richieste
         
         st.markdown("---")
         st.write(f"**{len(richieste)} tipi di tagli configurati**")
-        if richieste:
-            for r in richieste:
-                st.write(f"- {r.lunghezza:.2f}m x {r.quantita} pezzi")
     
     # Bottone calcola
     st.markdown("---")
     col_center = st.columns([1, 2, 1])
     with col_center[1]:
-        if st.button("🚀 CALCOLA (MINIMI SPEZZONI)", use_container_width=True, type="primary"):
+        if st.button("🚀 CALCOLA (anche parziale)", use_container_width=True, type="primary"):
             if not st.session_state.spezzoni:
                 st.error("❌ Aggiungi almeno uno spezzone!")
             elif not richieste:
@@ -436,61 +452,86 @@ def main():
             else:
                 with st.spinner("⏳ Calcolo in corso..."):
                     ottim = OttimizzatoreTagli(st.session_state.soglia)
-                    piani, scarto_tot, ok = ottim.calcola_ottimale(
+                    risultato = ottim.calcola_ottimale(
                         copy.deepcopy(st.session_state.spezzoni), 
                         richieste
                     )
-                    st.session_state.piani = piani
-                    st.session_state.richieste = richieste
+                    st.session_state.risultato = risultato
                 
-                if not ok:
-                    st.markdown('<div class="error-box">❌ IMPOSSIBILE! Spezzoni insufficienti.</div>', unsafe_allow_html=True)
-                    col_a, col_b = st.columns(2)
-                    with col_a:
-                        st.metric("Disponibile", f"{sum(s.lunghezza for s in st.session_state.spezzoni):.2f}m")
-                    with col_b:
-                        st.metric("Richiesto", f"{sum(r.lunghezza*r.quantita for r in richieste):.2f}m")
+                if risultato.completato:
+                    st.success("✅ TAGLIO COMPLETATO! Tutti i pezzi realizzabili")
                 else:
-                    st.success("✅ Ottimizzazione completata!")
+                    st.warning("⚠️ TAGLIO PARZIALE - Materiali insufficienti")
     
     # Risultati
-    if st.session_state.piani:
+    if st.session_state.risultato:
         st.markdown("---")
-        st.subheader("📋 Risultati")
         
-        piani = st.session_state.piani
+        risultato = st.session_state.risultato
         richieste = st.session_state.richieste
-        scarto_tot = sum(p.scarto for p in piani)
-        efficienza = (1 - scarto_tot/sum(p.spezzone_lunghezza for p in piani))*100 if sum(p.spezzone_lunghezza for p in piani) > 0 else 0
         
-        spezzoni_usati = len(piani)
-        spezzoni_totali = len(st.session_state.spezzoni)
-        spezzoni_risparmiati = spezzoni_totali - spezzoni_usati
+        # Box stato
+        if risultato.completato:
+            st.markdown('<div class="success-box">✅ <strong>COMPLETATO!</strong> Tutti i tagli sono realizzabili con gli spezzoni disponibili.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="partial-box">⚠️ <strong>PARZIALE!</strong> Con gli spezzoni disponibili riesci a fare solo una parte dei tagli richiesti.</div>', unsafe_allow_html=True)
+        
+        # Metriche
+        scarto_tot = risultato.scarto_totale
+        efficienza = (1 - scarto_tot/sum(p.spezzone_lunghezza for p in risultato.piani))*100 if risultato.piani else 0
         
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         with col_m1:
-            st.metric("Spezzoni usati", f"{spezzoni_usati}/{spezzoni_totali}")
+            st.metric("Spezzoni usati", f"{risultato.spezzoni_usati}/{risultato.spezzoni_totali}")
         with col_m2:
             st.metric("Scarto totale", f"{scarto_tot:.3f}m")
         with col_m3:
             st.metric("Efficienza", f"{efficienza:.1f}%")
         with col_m4:
-            if spezzoni_risparmiati > 0:
-                st.metric("💰 Risparmiati", spezzoni_risparmiati, delta="Non usati")
-            else:
-                st.metric("💰 Risparmiati", 0)
+            risparmiati = risultato.spezzoni_totali - risultato.spezzoni_usati
+            st.metric("💰 Risparmiati", risparmiati if risparmiati > 0 else 0)
         
-        if spezzoni_risparmiati > 0:
-            st.markdown(f"""
-            <div class="success-box">
-                🎉 <strong>OTTIMO!</strong> Hai risparmiato <strong>{spezzoni_risparmiati} spezzoni</strong> 
-                che puoi riutilizzare per altri lavori!
-            </div>
-            """, unsafe_allow_html=True)
+        # Tabella riepilogo: Richiesti vs Fatti vs Mancanti
+        st.subheader("📊 Riepilogo Tagli")
         
-        # Dettaglio per spezzone
-        for piano in piani:
-            with st.expander(f"🔧 Spezzone #{piano.spezzone_id} ({piano.spezzone_lunghezza:.3f}m)"):
+        data_riep = []
+        for rich in richieste:
+            fatti = risultato.tagli_fatti.get(rich.lunghezza, 0)
+            mancanti = risultato.tagli_mancanti.get(rich.lunghezza, 0)
+            
+            data_riep.append({
+                "Misura": f"{rich.lunghezza:.2f}m",
+                "Richiesti": rich.quantita,
+                "✅ Fatti": fatti,
+                "❌ Mancanti": mancanti if mancanti > 0 else "-",
+                "Stato": "🟢 OK" if mancanti == 0 else f"🟡 Mancano {mancanti}"
+            })
+        
+        df_riep = pd.DataFrame(data_riep)
+        st.dataframe(df_riep, use_container_width=True, hide_index=True)
+        
+        # Avviso se manca qualcosa
+        if not risultato.completato:
+            st.markdown("---")
+            st.subheader("❌ Tagli Mancanti")
+            
+            for misura, qty in risultato.tagli_mancanti.items():
+                st.markdown(f"""
+                <div class="missing-box">
+                    <strong>{misura:.2f}m</strong>: mancano <strong>{qty} pezzi</strong><br>
+                    <small>Servono altri {misura * qty:.2f}m di tubo per completare</small>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            totale_mancante = sum(misura * qty for misura, qty in risultato.tagli_mancanti.items())
+            st.info(f"💡 In totale mancano {totale_mancante:.2f}m di tubo per completare tutti i tagli")
+        
+        # Dettaglio piano di taglio
+        st.markdown("---")
+        st.subheader("🔧 Piano di Taglio Dettagliato")
+        
+        for piano in risultato.piani:
+            with st.expander(f"Spezzone #{piano.spezzone_id} ({piano.spezzone_lunghezza:.3f}m)"):
                 data_tagli = []
                 pos = 0.0
                 for i, taglio in enumerate(piano.tagli, 1):
@@ -498,8 +539,8 @@ def main():
                         "N°": i,
                         "Misura (m)": f"{taglio:.3f}",
                         "Misura (cm)": f"{taglio*100:.1f}",
-                        "Inizio (m)": f"{pos:.3f}",
-                        "Fine (m)": f"{pos+taglio:.3f}"
+                        "Inizio": f"{pos:.3f}m",
+                        "Fine": f"{pos+taglio:.3f}m"
                     })
                     pos += taglio
                 
@@ -511,50 +552,27 @@ def main():
                 else:
                     st.warning(f"⚠️ Scarto: {piano.scarto:.3f}m - DA RIUTILIZZARE")
         
-        # Riepilogo
-        st.markdown("---")
-        st.subheader("📊 Riepilogo Tagli")
-        
-        tagli_fatti = {}
-        for p in piani:
-            for t in p.tagli:
-                tagli_fatti[t] = tagli_fatti.get(t, 0) + 1
-        
-        data_riep = []
-        for rich in richieste:
-            fatti = tagli_fatti.get(rich.lunghezza, 0)
-            data_riep.append({
-                "Misura": f"{rich.lunghezza:.2f}m",
-                "Richiesti": rich.quantita,
-                "Ottenuti": fatti,
-                "Stato": "✅ Completato" if fatti >= rich.quantita else "⚠️ Parziale"
-            })
-        
-        df_riep = pd.DataFrame(data_riep)
-        st.dataframe(df_riep, use_container_width=True, hide_index=True)
-        
         # Download Excel
         st.markdown("---")
         if EXCEL_DISPONIBILE:
             excel_buffer = crea_excel_download(
                 st.session_state.spezzoni,
                 richieste,
-                piani,
+                risultato,
                 st.session_state.soglia
             )
             
             col_dl1, col_dl2, col_dl3 = st.columns([1, 2, 1])
             with col_dl2:
                 st.download_button(
-                    label="📥 Scarica Report Excel Completo",
+                    label="📥 Scarica Report Excel",
                     data=excel_buffer,
-                    file_name=f"BestCut_MinimiSpezzoni_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    file_name=f"BestCut_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
         else:
-            st.error("⚠️ openpyxl non installato. Excel non disponibile.")
+            st.error("⚠️ openpyxl non installato")
 
 if __name__ == "__main__":
     main()
-
