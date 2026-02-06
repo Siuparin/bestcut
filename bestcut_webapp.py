@@ -1,5 +1,5 @@
 # bestcut_webapp.py
-# Installa prima: pip install streamlit openpyxl
+# Installa prima: pip install streamlit openpyxl pandas
 
 import streamlit as st
 from dataclasses import dataclass
@@ -20,7 +20,7 @@ except ImportError:
 
 # Configurazione pagina Streamlit
 st.set_page_config(
-    page_title="BestCut - Ottimizzatore Taglio Tubi",
+    page_title="BestCut - Minimi Spezzoni",
     page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -41,6 +41,14 @@ st.markdown("""
         color: #666;
         text-align: center;
         margin-bottom: 2rem;
+    }
+    .logic-box {
+        background-color: #FFF3E0;
+        color: #E65100;
+        padding: 1rem;
+        border-radius: 10px;
+        border-left: 5px solid #FF9800;
+        margin: 1rem 0;
     }
     .success-box {
         background-color: #d4edda;
@@ -63,21 +71,19 @@ st.markdown("""
         border-radius: 10px;
         border-left: 5px solid #dc3545;
     }
-    .stButton>button {
-        background-color: #2196F3;
-        color: white;
-        font-weight: bold;
-        border-radius: 10px;
-        padding: 0.5rem 2rem;
-    }
-    .stButton>button:hover {
-        background-color: #1976D2;
-    }
     .metric-card {
         background-color: #f8f9fa;
         padding: 1rem;
         border-radius: 10px;
         border: 1px solid #dee2e6;
+    }
+    .saved-badge {
+        background-color: #4CAF50;
+        color: white;
+        padding: 0.2rem 0.5rem;
+        border-radius: 15px;
+        font-size: 0.8rem;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -104,79 +110,75 @@ class OttimizzatoreTagli:
         self.soglia_scarto = soglia_scarto
         
     def calcola_ottimale(self, spezzoni: List[Spezzone], richieste: List[TaglioRichiesto]) -> Tuple[List[PianoTaglio], float, bool]:
+        """
+        Strategia: Usa il MINIMO numero di spezzoni possibile.
+        Priorita: 
+        1. Minimizzare numero di spezzoni usati
+        2. Poi minimizzare lo scarto
+        """
+        # Crea lista di tutti i tagli necessari
         tagli_necessari = []
         for richiesta in richieste:
             for _ in range(richiesta.quantita):
                 tagli_necessari.append(richiesta.lunghezza)
         
+        # Ordina per lunghezza decrescente (i piu grandi prima)
         tagli_necessari.sort(reverse=True)
+        
+        # Verifica se e fattibile
         totale_spezzoni = sum(s.lunghezza for s in spezzoni)
         totale_tagli = sum(tagli_necessari)
         
         if totale_tagli > totale_spezzoni:
             return [], totale_spezzoni - totale_tagli, False
         
-        spezzoni_work = copy.deepcopy(spezzoni)
+        # ORDINA SPEZZONI per lunghezza decrescente (usa i piu grandi prima)
+        spezzoni_ordinati = sorted(spezzoni, key=lambda x: x.lunghezza, reverse=True)
+        
+        # Algoritmo: cerca di infilare TUTTO in ogni spezzone prima di passare al prossimo
+        spezzoni_work = copy.deepcopy(spezzoni_ordinati)
         tagli_rimanenti = tagli_necessari.copy()
         piani = []
         
         while tagli_rimanenti:
-            migliore_idx = -1
-            migliore_combo = None
-            migliore_scarto = float('inf')
+            if not spezzoni_work:
+                return None, 0, False  # Non ci sono piu spezzoni
             
-            for idx, spezzone in enumerate(spezzoni_work):
-                if spezzone.lunghezza <= 0:
-                    continue
-                    
-                combo, scarto = self._trova_combinazione(spezzone.lunghezza, tagli_rimanenti)
-                
-                if combo and scarto < migliore_scarto:
-                    migliore_scarto = scarto
-                    migliore_idx = idx
-                    migliore_combo = combo
+            # Prendi il primo spezzone disponibile (il piu grande)
+            spezzone_corrente = spezzoni_work[0]
             
-            if migliore_idx == -1:
-                return None, 0, False
+            # Cerca di riempire questo spezzone IL PIU POSSIBILE
+            # Usa tutti i tagli che ci stanno, non solo la combinazione ottimale
+            tagli_da_tagliare = []
+            tagli_temp = tagli_rimanenti.copy()
             
-            spezzone_usato = spezzoni_work[migliore_idx]
-            for taglio in migliore_combo:
-                tagli_rimanenti.remove(taglio)
+            # Prova a infilare tagli dal piu grande al piu piccolo
+            for taglio in tagli_temp:
+                if sum(tagli_da_tagliare) + taglio <= spezzone_corrente.lunghezza:
+                    tagli_da_tagliare.append(taglio)
+                    tagli_rimanenti.remove(taglio)
             
-            nuova_lunghezza = spezzone_usato.lunghezza - sum(migliore_combo)
-            if nuova_lunghezza > 0.01:
-                spezzoni_work[migliore_idx] = Spezzone(nuova_lunghezza, spezzone_usato.id)
-            else:
-                spezzoni_work.pop(migliore_idx)
+            if not tagli_da_tagliare:
+                # Questo spezzone e troppo piccolo per qualsiasi taglio rimanente
+                # Togliamo dagli disponibili e passiamo al prossimo
+                spezzoni_work.pop(0)
+                continue
+            
+            # Calcola scarto
+            scarto = spezzone_corrente.lunghezza - sum(tagli_da_tagliare)
             
             piani.append(PianoTaglio(
-                spezzone_id=spezzone_usato.id,
-                spezzone_lunghezza=spezzone_usato.lunghezza,
-                tagli=migliore_combo,
-                scarto=migliore_scarto
+                spezzone_id=spezzone_corrente.id,
+                spezzone_lunghezza=spezzone_corrente.lunghezza,
+                tagli=tagli_da_tagliare,
+                scarto=scarto
             ))
+            
+            # Rimuovi questo spezzone dai disponibili
+            spezzoni_work.pop(0)
         
         scarto_totale = sum(p.scarto for p in piani)
         return piani, scarto_totale, True
-    
-    def _trova_combinazione(self, max_lunghezza: float, tagli_disp: List[float]) -> Tuple[List[float], float]:
-        n = len(tagli_disp)
-        best_combo = []
-        best_scarto = max_lunghezza
-        
-        for r in range(1, min(n + 1, 6)):
-            for combo_indices in combinations(range(n), r):
-                somma = sum(tagli_disp[i] for i in combo_indices)
-                if somma <= max_lunghezza:
-                    scarto = max_lunghezza - somma
-                    if scarto < best_scarto:
-                        best_scarto = scarto
-                        best_combo = [tagli_disp[i] for i in combo_indices]
-        
-        if not best_combo:
-            return None, float('inf')
-        
-        return best_combo, best_scarto
 
 def crea_excel_download(spezzoni, richieste, piani, soglia):
     """Crea file Excel in memoria per il download"""
@@ -191,7 +193,7 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
                   top=Side(style='thin'), bottom=Side(style='thin'))
     
     ws.merge_cells('A1:E1')
-    ws['A1'] = "PIANO DI TAGLIO TUBI"
+    ws['A1'] = "PIANO DI TAGLIO TUBI - MINIMI SPEZZONI"
     ws['A1'].font = Font(size=18, bold=True, color="2196F3")
     ws['A1'].alignment = Alignment(horizontal='center')
     ws.row_dimensions[1].height = 30
@@ -199,7 +201,10 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
     ws['A2'] = f"Generato: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
     ws['A2'].font = Font(italic=True)
     
-    row = 4
+    ws['A3'] = "Strategia: Minimizzare il numero di spezzoni utilizzati"
+    ws['A3'].font = Font(italic=True, color="E65100")
+    
+    row = 5
     ws.merge_cells(f'A{row}:E{row}')
     ws[f'A{row}'] = "SPEZZONI DISPONIBILI"
     ws[f'A{row}'].font = header_font
@@ -228,7 +233,7 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
     ws[f'A{row}'].alignment = Alignment(horizontal='center')
     
     row += 1
-    headers = [('A', 'Misura (m)'), ('B', 'Misura (cm)'), ('C', 'Quantità'), ('D', 'Totale (m)')]
+    headers = [('A', 'Misura (m)'), ('B', 'Misura (cm)'), ('C', 'Quantita'), ('D', 'Totale (m)')]
     for col, title in headers:
         ws[f'{col}{row}'] = title
         ws[f'{col}{row}'].font = subheader_font
@@ -293,7 +298,6 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
     for i, w in enumerate([15, 15, 15, 18, 18], 1):
         ws.column_dimensions[chr(64+i)].width = w
     
-    # Salva in memoria
     excel_buffer = BytesIO()
     wb.save(excel_buffer)
     excel_buffer.seek(0)
@@ -301,8 +305,18 @@ def crea_excel_download(spezzoni, richieste, piani, soglia):
 
 def main():
     # Header
-    st.markdown('<p class="main-header">🔧 BestCut</p>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Ottimizzatore intelligente per il taglio dei tubi</p>', unsafe_allow_html=True)
+    st.markdown('<p class="main-header">🔧 BestCut v3.1</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">Ottimizzatore che minimizza il NUMERO DI SPEZZONI utilizzati</p>', unsafe_allow_html=True)
+    
+    # Spiegazione logica
+    st.markdown("""
+    <div class="logic-box">
+        <strong>🧠 LOGICA "MINIMI SPEZZONI":</strong><br>
+        Il programma riempie completamente ogni tubo prima di passare al prossimo, 
+        anche se questo comporta uno scarto leggermente maggiore sul singolo tubo, 
+        ma <strong>risparmia interi spezzoni</strong> per altri lavori!
+    </div>
+    """, unsafe_allow_html=True)
     
     # Inizializza session state
     if 'spezzoni' not in st.session_state:
@@ -317,6 +331,8 @@ def main():
     
     with col1:
         st.subheader("📦 Spezzoni Disponibili")
+        
+        st.info("💡 Inserisci prima i tubi PIU GRANDI (verranno ordinati automaticamente)")
         
         # Input nuovo spezzone
         nuovo_spezzone = st.number_input(
@@ -333,8 +349,13 @@ def main():
                 st.session_state.spezzoni.append(
                     Spezzone(nuovo_spezzone, st.session_state.prossimo_id)
                 )
-                st.session_state.prossimo_id += 1
-                st.success(f"✅ Aggiunto spezzone da {nuovo_spezzone:.2f}m")
+                # ORDINA per lunghezza decrescente
+                st.session_state.spezzoni.sort(key=lambda x: x.lunghezza, reverse=True)
+                # Rinumera ID
+                for i, s in enumerate(st.session_state.spezzoni, 1):
+                    s.id = i
+                st.session_state.prossimo_id = len(st.session_state.spezzoni) + 1
+                st.success(f"✅ Aggiunto e ordinato: {nuovo_spezzone:.2f}m")
                 st.rerun()
             else:
                 st.error("❌ Inserisci una lunghezza valida")
@@ -357,6 +378,10 @@ def main():
             with col_btn1:
                 if st.button("🗑️ Rimuovi", use_container_width=True):
                     st.session_state.spezzoni = [s for s in st.session_state.spezzoni if s.id != id_da_rimuovere]
+                    # Rinumera
+                    for i, s in enumerate(st.session_state.spezzoni, 1):
+                        s.id = i
+                    st.session_state.prossimo_id = len(st.session_state.spezzoni) + 1
                     st.success("✅ Rimosso!")
                     st.rerun()
             with col_btn2:
@@ -366,7 +391,7 @@ def main():
                     st.success("✅ Tutti rimossi!")
                     st.rerun()
         else:
-            st.info("💡 Nessuno spezzone inserito. Aggiungi i tubi disponibili.")
+            st.warning("⚠️ Nessuno spezzone inserito. Aggiungi i tubi disponibili.")
     
     with col2:
         st.subheader("✂️ Tagli Richiesti")
@@ -413,14 +438,20 @@ def main():
             if misura > 0 and qty > 0:
                 richieste.append(TaglioRichiesto(misura, qty))
         
+        # Ordina richieste per lunghezza decrescente
+        richieste.sort(key=lambda x: x.lunghezza, reverse=True)
+        
         st.markdown("---")
         st.write(f"**{len(richieste)} tipi di tagli configurati**")
+        if richieste:
+            for r in richieste:
+                st.write(f"- {r.lunghezza:.2f}m x {r.quantita} pezzi")
     
     # Bottone calcola centrato
     st.markdown("---")
     col_center = st.columns([1, 2, 1])
     with col_center[1]:
-        if st.button("🚀 CALCOLA OTTIMIZZAZIONE", use_container_width=True, type="primary"):
+        if st.button("🚀 CALCOLA (MINIMI SPEZZONI)", use_container_width=True, type="primary"):
             if not st.session_state.spezzoni:
                 st.error("❌ Aggiungi almeno uno spezzone!")
             elif not richieste:
@@ -443,28 +474,46 @@ def main():
                     with col_b:
                         st.metric("Richiesto", f"{sum(r.lunghezza*r.quantita for r in richieste):.2f}m")
                 else:
-                    st.success("✅ Ottimizzazione completata!")
+                    st.success("✅ Ottimizzazione completata con logica MINIMI SPEZZONI!")
     
     # Risultati
     if st.session_state.piani:
         st.markdown("---")
         st.subheader("📋 Risultati")
         
-        # Metriche
+        # Metriche principali
         piani = st.session_state.piani
         richieste = st.session_state.richieste
         scarto_tot = sum(p.scarto for p in piani)
-        efficienza = (1 - scarto_tot/sum(p.spezzone_lunghezza for p in piani))*100
+        efficienza = (1 - scarto_tot/sum(p.spezzone_lunghezza for p in piani))*100 if sum(p.spezzone_lunghezza for p in piani) > 0 else 0
         
+        spezzoni_usati = len(piani)
+        spezzoni_totali = len(st.session_state.spezzoni)
+        spezzoni_risparmiati = spezzoni_totali - spezzoni_usati
+        
+        # Metriche in cards
         col_m1, col_m2, col_m3, col_m4 = st.columns(4)
         with col_m1:
-            st.metric("Spezzoni usati", len(piani))
+            st.metric("Spezzoni usati", f"{spezzoni_usati}/{spezzoni_totali}")
         with col_m2:
             st.metric("Scarto totale", f"{scarto_tot:.3f}m")
         with col_m3:
-            st.metric("Scarto", f"{scarto_tot*100:.1f}cm")
-        with col_m4:
             st.metric("Efficienza", f"{efficienza:.1f}%")
+        with col_m4:
+            if spezzoni_risparmiati > 0:
+                st.metric("💰 Risparmiati", spezzoni_risparmiati, delta="Non usati")
+            else:
+                st.metric("💰 Risparmiati", 0)
+        
+        # Banner risparmio
+        if spezzoni_risparmiati > 0:
+            st.markdown(f"""
+            <div class="success-box">
+                🎉 <strong>OTTIMO!</strong> Hai risparmiato <strong>{spezzoni_risparmiati} spezzoni</strong> 
+                ({sum(s.lunghezza for s in st.session_state.spezzoni if s.id > spezzoni_usati):.2f}m totali) 
+                che puoi riutilizzare per altri lavori!
+            </div>
+            """, unsafe_allow_html=True)
         
         # Dettaglio per spezzone
         for piano in piani:
@@ -514,8 +563,8 @@ def main():
         st.dataframe(df_riep, use_container_width=True, hide_index=True)
         
         # Download Excel
+        st.markdown("---")
         if EXCEL_DISPONIBILE:
-            st.markdown("---")
             excel_buffer = crea_excel_download(
                 st.session_state.spezzoni,
                 richieste,
@@ -523,13 +572,17 @@ def main():
                 st.session_state.soglia
             )
             
-            st.download_button(
-                label="📥 Scarica Report Excel",
-                data=excel_buffer,
-                file_name=f"BestCut_Piano_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+            col_dl1, col_dl2, col_dl3 = st.columns([1, 2, 1])
+            with col_dl2:
+                st.download_button(
+                    label="📥 Scarica Report Excel Completo",
+                    data=excel_buffer,
+                    file_name=f"BestCut_MinimiSpezzoni_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        else:
+            st.error("⚠️ Modulo openpyxl non installato. Excel non disponibile.")
 
 if __name__ == "__main__":
     main()
