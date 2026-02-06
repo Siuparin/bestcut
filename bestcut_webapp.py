@@ -1,6 +1,25 @@
 # bestcut_webapp.py
 # Installa prima: pip install streamlit openpyxl pandas
 
+# bestcut_webapp.py
+
+import subprocess
+import sys
+
+# Tenta di importare openpyxl, se fallisce lo installa automaticamente
+try:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    EXCEL_DISPONIBILE = True
+except ImportError:
+    print("Installazione openpyxl in corso...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl"])
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    EXCEL_DISPONIBILE = True
+
+# ... resto del codice
+
 import streamlit as st
 from dataclasses import dataclass
 from typing import List, Tuple
@@ -586,3 +605,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
